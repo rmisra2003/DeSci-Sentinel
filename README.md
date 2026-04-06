@@ -86,3 +86,5 @@ npm run dev  # Runs on port 3000
 ```
 
 ## my X id is @rammisraai
+## my email id - rammisraai@gmail.com
+

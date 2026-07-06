@@ -22,22 +22,26 @@ import { SCHOLAR_SYSTEM_PROMPT, buildUserPrompt } from "./prompt.js";
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
-const OPENAI_MODEL = "gpt-4.1-mini";
-const OPENAI_FALLBACK_MODEL = "gpt-4o-mini";
-const OPENAI_TIMEOUT_MS = 30_000;
+const DEEPSEEK_MODEL = "deepseek-chat";
+const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
+const DEEPSEEK_TIMEOUT_MS = 30_000;
 const MAX_RETRIES = 1;
 
 // ─── OpenAI Client ──────────────────────────────────────────────────────────
 
-function getOpenAIClient(): OpenAI {
-    const apiKey = process.env.OPENAI_API_KEY;
+function getDeepSeekClient(): OpenAI {
+    const apiKey = process.env.DEEPSEEK_API_KEY;
     if (!apiKey) {
         throw new Error(
-            "[AI-Evaluator] OPENAI_API_KEY is not set. " +
+            "[AI-Evaluator] DEEPSEEK_API_KEY is not set. " +
             "Add it to your .env file to enable AI-powered evaluation."
         );
     }
-    return new OpenAI({ apiKey, timeout: OPENAI_TIMEOUT_MS });
+    return new OpenAI({
+        apiKey,
+        baseURL: DEEPSEEK_BASE_URL,
+        timeout: DEEPSEEK_TIMEOUT_MS,
+    });
 }
 
 // ─── Zod Schema for AI Response Validation ──────────────────────────────────
@@ -56,29 +60,6 @@ const AIScoreResponseSchema = z.object({
 type AIScoreResponse = z.infer<typeof AIScoreResponseSchema>;
 
 // ─── JSON Schema for OpenAI Structured Outputs ─────────────────────────────
-
-const AI_RESPONSE_JSON_SCHEMA = {
-    name: "evaluation_response",
-    strict: true,
-    schema: {
-        type: "object" as const,
-        properties: {
-            novelty: { type: "number" as const, description: "Novelty score from 0 to 25" },
-            methodology: { type: "number" as const, description: "Methodology score from 0 to 25" },
-            impact: { type: "number" as const, description: "Scientific impact score from 0 to 25" },
-            reproducibility: { type: "number" as const, description: "Reproducibility score from 0 to 25" },
-            recommendedBioDAO: { type: "string" as const, description: "Name of the recommended BioDAO" },
-            impactCategory: { type: "string" as const, description: "Research impact category" },
-            reasoning: { type: "string" as const, description: "2-4 sentence evaluation rationale" },
-            confidence: { type: "number" as const, description: "Self-assessed confidence 0.0 to 1.0" },
-        },
-        required: [
-            "novelty", "methodology", "impact", "reproducibility",
-            "recommendedBioDAO", "impactCategory", "reasoning", "confidence",
-        ],
-        additionalProperties: false,
-    },
-};
 
 // ─── Public Interface (unchanged for backward compatibility) ────────────────
 
@@ -112,7 +93,7 @@ export async function evaluateResearch(
     const evaluationId = randomBytes(6).toString("hex");
     const startTime = Date.now();
 
-    console.log(`🧪 [AI-Evaluator] START evaluation_id=${evaluationId}`);
+    console.log(`🧪 [AI-Evaluator] START evaluation_id=${evaluationId} model=${DEEPSEEK_MODEL}`);
 
     // Deterministic: content fingerprint (unchanged from original)
     const verificationHash = createHash("sha256")
@@ -139,7 +120,7 @@ export async function evaluateResearch(
             trustScore >= 80 ? "FUND" : trustScore >= 60 ? "REVIEW" : "REJECT";
 
         const agentReasoning = [
-            `AI Evaluation (${OPENAI_MODEL}, confidence: ${aiResponse.confidence.toFixed(2)}).`,
+            `AI Evaluation (${DEEPSEEK_MODEL}, confidence: ${aiResponse.confidence.toFixed(2)}).`,
             `Reproducibility: ${reproducibilityScore}/25, Methodology: ${methodologyScore}/25, Novelty: ${noveltyScore}/25, Impact: ${impactScore}/25.`,
             `Recommended BioDAO: ${aiResponse.recommendedBioDAO}.`,
             `Grant Recommendation: ${grantRecommendation}.`,
@@ -149,7 +130,7 @@ export async function evaluateResearch(
         const latency = Date.now() - startTime;
         console.log(
             `🧪 [AI-Evaluator] COMPLETE evaluation_id=${evaluationId} ` +
-            `latency=${latency}ms model=${OPENAI_MODEL} trustScore=${trustScore}`
+            `latency=${latency}ms model=${DEEPSEEK_MODEL} trustScore=${trustScore}`
         );
 
         const evaluation: EvaluationResult = {
@@ -222,21 +203,20 @@ async function callOpenAI(
     content: string,
     evaluationId: string,
 ): Promise<AIScoreResponse> {
-    const client = getOpenAIClient();
+    const client = getDeepSeekClient();
     const userPrompt = buildUserPrompt(content);
 
     let response: OpenAI.Chat.Completions.ChatCompletion;
 
     try {
         response = await client.chat.completions.create({
-            model: OPENAI_MODEL,
+            model: DEEPSEEK_MODEL,
             messages: [
                 { role: "system", content: SCHOLAR_SYSTEM_PROMPT },
                 { role: "user", content: userPrompt },
             ],
             response_format: {
-                type: "json_schema",
-                json_schema: AI_RESPONSE_JSON_SCHEMA,
+                type: "json_object",
             },
             temperature: 0.3, // Low temperature for consistent, analytical output
         });
@@ -292,30 +272,30 @@ async function callOpenAI(
 function categorizeOpenAIError(error: unknown): Error {
     if (error instanceof OpenAI.APIError) {
         const status = error.status;
-        const message = error.message || "Unknown OpenAI API error";
+        const message = error.message || "Unknown DeepSeek API error";
 
         if (status === 401) {
-            return new Error(`OpenAI authentication failed: ${message}`);
+            return new Error(`DeepSeek authentication failed: ${message}`);
         }
         if (status === 429) {
-            return new Error(`OpenAI rate limit exceeded: ${message}. Please retry later.`);
+            return new Error(`DeepSeek rate limit exceeded: ${message}. Please retry later.`);
         }
         if (status === 500 || status === 502 || status === 503) {
-            return new Error(`OpenAI service unavailable (${status}): ${message}`);
+            return new Error(`DeepSeek service unavailable (${status}): ${message}`);
         }
         if (status === 400) {
-            return new Error(`OpenAI bad request: ${message}`);
+            return new Error(`DeepSeek bad request: ${message}`);
         }
 
-        return new Error(`OpenAI API error (${status}): ${message}`);
+        return new Error(`DeepSeek API error (${status}): ${message}`);
     }
 
     if (error instanceof OpenAI.APIConnectionError) {
-        return new Error(`OpenAI connection failed: ${error.message}`);
+        return new Error(`DeepSeek connection failed: ${error.message}`);
     }
 
     if (error instanceof Error && error.message.includes("timeout")) {
-        return new Error(`OpenAI request timed out after ${OPENAI_TIMEOUT_MS}ms`);
+        return new Error(`DeepSeek request timed out after ${DEEPSEEK_TIMEOUT_MS}ms`);
     }
 
     return error instanceof Error ? error : new Error(String(error));
